@@ -160,7 +160,6 @@ class CLI(object):
 
         # fallback
         else:
-            print '????', repr(self.char)
             self.sendline('')
 
     def buffer_update(self, new_buffer):

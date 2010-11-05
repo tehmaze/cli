@@ -25,6 +25,8 @@ class Console(object):
         self.restore()
 
     def debuffer(self):
+        if not sys.stdin.isatty():
+            return
         if self._buffered:
             self._fd = self.fileno()
             self.old = termios.tcgetattr(self._fd)
@@ -32,6 +34,8 @@ class Console(object):
             self._buffered = not self._buffered
 
     def restore(self):
+        if not sys.stdin.isatty():
+            return
         if not self._buffered:
             tty.setcbreak(self._fd)
             tcsetattr_flags = termios.TCSAFLUSH
