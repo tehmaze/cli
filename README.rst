@@ -5,6 +5,7 @@
 Framework for creating command line interfaces with basic readline
 functionality.
 
+
 Usage
 =====
 
@@ -30,4 +31,28 @@ to a (client) socket::
     >>> while True:
     ...     cli.read()
     ...
+
+
+Features
+========
+
+* Both console and sockets are supported
+
+* Tab completion
+
+* History
+
+  - History search
+
+  - History completion
+
+* Online help
+
+
+TODO
+====
+
+* History persistance
+
+* Sections (grouped commands)
 

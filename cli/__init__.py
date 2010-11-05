@@ -42,6 +42,10 @@ class CLI(object):
         '\x7f':                 'backspace'
     }
 
+    alias = {
+        '?': 'help',
+    }
+
     def __init__(self, socket=None, prompt='cli% '):
         self.socket = socket or Console()
         self.prompt = self.prompt_default = prompt
@@ -49,6 +53,7 @@ class CLI(object):
         self.history = []
         self.histpos = -1
         self.mode = MODE_INPUT
+        self.char = self.last = chr(0)
         self.send(self.prompt)
 
     def send(self, data):
@@ -63,10 +68,11 @@ class CLI(object):
         return self.socket.fileno()
 
     def read(self):
-        char = self.socket.recv(1)
+        self.last = self.char
+        self.char = self.socket.recv(1)
 
         # ^C / ^D / ^Z
-        if char in ['\x03', '\x04', '\x1a']:
+        if self.char in ['\x03', '\x04', '\x1a']:
             if self.buffer:
                 self.buffer = ''
                 self.send('\x07')
@@ -76,20 +82,20 @@ class CLI(object):
                 self.do_exit()
 
         # ^H / backspace
-        elif char == '\x08':
+        elif self.char == '\x08':
             if self.mode == MODE_INPUT:
                 self.buffer_update(self.buffer[:-1])
 
             elif self.mode == MODE_REVERSE_SEARCH:
                 filter = self.buffer[:-1]
-                self.handle_search(char, filter, self.history[::-1])
+                self.handle_search(self.char, filter, self.history[::-1])
 
             elif self.mode == MODE_FORWARD_SEARCH:
                 filter = self.buffer[:-1]
-                self.handle_search(char, filter, self.history)
+                self.handle_search(self.char, filter, self.history)
 
         # ^I / tab
-        elif char == '\x09':
+        elif self.char == '\x09':
             tabs = [x.replace('do_', '') for x in dir(self) if x.startswith('do_%s' % (self.buffer,))]
             if len(tabs) == 0:
                 self.send('\x07') # beep
@@ -98,53 +104,51 @@ class CLI(object):
                 self.send('\r%s%s' % (self.prompt, self.buffer))
             else:
                 tabs.sort()
-                self.send('\r%s%s' % (' ' * len(self.prompt), ' ' * len(self.buffer)))
-                self.send('\r%s' % (' '.join(tabs),))
-                self.sendline()
-                self.send(self.buffer)
+                self.sendline('\n\r%s' % (' '.join(tabs),))
+                self.buffer_update(self.buffer)
 
         # escape
-        elif char in ('\x1b', '\x1b\x4f', '\x1b\x5b'):
+        elif self.char in ('\x1b', '\x1b\x4f', '\x1b\x5b'):
             # read complete escape sequence
-            while char in ('\x1b', '\x1b\x4f', '\x1b\x5b') or \
-                char[:3] in ('\x1b\x5b\x31', '\x1b\x5b\x32', '\x1b\x5b\x33'):
-                char += self.socket.recv(1)
-                if char[-1] == '\x7e':
+            while self.char in ('\x1b', '\x1b\x4f', '\x1b\x5b') or \
+                self.char[:3] in ('\x1b\x5b\x31', '\x1b\x5b\x32', '\x1b\x5b\x33'):
+                self.char += self.socket.recv(1)
+                if self.char[-1] == '\x7e':
                     break
-            self.handle_special(char)
+            self.handle_special(self.char)
 
         # ^R / reverse-search
-        elif char == '\x12':
+        elif self.char == '\x12':
             self.mode = MODE_REVERSE_SEARCH
             self.prompt = '(reverse-search): '
             self.buffer_update('')
 
         # ^S / forward-search
-        elif char == '\x13':
+        elif self.char == '\x13':
             self.mode = MODE_FORWARD_SEARCH
             self.prompt = '(forward-search): '
             self.buffer_update('')
 
         # ^W / wipe-word
-        elif char == '\x17':
+        elif self.char == '\x17':
             self.buffer_update(' '.join(self.buffer.split(' ')[:-1]))
 
-        # regular characters
-        elif char >= '\x20' and char <= '\x7a':
+        # regular self.characters
+        elif self.char >= '\x20' and self.char <= '\x7a':
             if self.mode == MODE_INPUT:
-                self.buffer += char
-                self.send(char)
+                self.buffer += self.char
+                self.send(self.char)
 
             elif self.mode == MODE_REVERSE_SEARCH:
-                filter = self.buffer + char
-                self.handle_search(char, filter, self.history[::-1])
+                filter = self.buffer + self.char
+                self.handle_search(self.char, filter, self.history[::-1])
 
             elif self.mode == MODE_FORWARD_SEARCH:
-                filter = self.buffer + char
-                self.handle_search(char, filter, self.history)
+                filter = self.buffer + self.char
+                self.handle_search(self.char, filter, self.history)
 
         # ^M / enter
-        elif char in ['\x0a', '\x0d']:
+        elif self.char in ['\x0a', '\x0d']:
             self.prompt = self.prompt_default
             if self.mode == MODE_INPUT:
                 self.send('\r\n')
@@ -156,7 +160,7 @@ class CLI(object):
 
         # fallback
         else:
-            print '????', repr(char)
+            print '????', repr(self.char)
             self.sendline('')
 
     def buffer_update(self, new_buffer):
@@ -180,10 +184,7 @@ class CLI(object):
 
     def handle_command(self, line):
         self.buffer = ''
-        if line.strip():
-            self.history.append(line)
-            self.histpos = len(self.history)
-        else:
+        if not line.strip():
             self.mode = MODE_INPUT
             self.sendline('')
             return
@@ -195,9 +196,12 @@ class CLI(object):
             args = ''
 
         if cmnd:
+            cmnd = self.alias.get(cmnd, cmnd)
             hook = getattr(self, 'do_%s' % (cmnd,), None)
             if hook:
                 try:
+                    self.history.append(line)
+                    self.histpos = len(self.history)
                     return hook(*args.split())
                 except Exception, e:
                     error = str(e)
@@ -211,6 +215,24 @@ class CLI(object):
                         self.sendline('')
                     else:
                         self.sendline('error: %s' % (error,))
+                    return
+
+            elif cmnd.startswith('!'):
+                if cmnd.split()[0][1:].isdigit():
+                    back = int(cmnd.split()[0][1:])
+                    if back >= len(self.history):
+                        self.sendline('event not found')
+                    else:
+                        self.handle_command(self.history[back])
+                    return
+
+                else:
+                    back = cmnd.split()[0][1:]
+                    for item in self.history[::-1]:
+                        if item.startswith(back):
+                            return self.handle_command(item)
+                    self.sendline('event not found')
+                    return
 
         self.sendline('what? you need "help"')
 
