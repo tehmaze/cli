@@ -1,18 +1,25 @@
 class History(list):
     def __init__(self, *args):
         super(History, self).__init__(*args)
-        position = -1
+        self.position = -1
+
+    def append(self, *args):
+        super(History, self).append(*args)
+        self.reset()
 
     def reset(self):
-        self.position = len(self)
+        self.position = len(self) - 1
+
+    def current(self):
+        return self[self.position]
 
     def backward(self):
         self.position = max(0, self.position - 1)
-        return self[self.position]
+        return self.current()
 
     def forward(self):
         self.position = min(len(self) - 1, self.position + 1)
-        return self[self.position]
+        return self.current()
 
     def complete_backward(self, item):
         for line in iter(reversed(self)):
