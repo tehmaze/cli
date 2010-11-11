@@ -3,12 +3,14 @@
 import re
 import sys
 import textwrap
-from console import Console
+from cli.console import Console
+from cli.section import Root
+from cli.history import History
 
 MODE_INPUT, MODE_REVERSE_SEARCH, MODE_FORWARD_SEARCH = range(3)
+RE_NEWLINE = re.compile(r'(?:\r\n|\n)')
 
-
-class CLI(object):
+class Interface(object):
     re_arg = re.compile(r'^do_(?P<func>\S+)\(\) takes exactly (?P<args>\d+) arguments')
     sequence = {
         '\x1b\x5b\x41':         'up',
@@ -46,17 +48,38 @@ class CLI(object):
         '?': 'help',
     }
 
-    def __init__(self, socket=None, prompt='cli% '):
+    root_class = Root
+    history_class = History
+
+    def __init__(self, socket=None, name='cli', prompt='%(name)s %(path)s%% '):
         self.socket = socket or Console()
-        self.prompt = self.prompt_default = prompt
+        self.name = name
+        self.prompt_default = prompt
+        self.prompt_alternate = None
         self.buffer = ''
-        self.history = []
-        self.histpos = -1
+        self.linepos = 0
         self.mode = MODE_INPUT
         self.char = self.last = chr(0)
+        self.history = self.history_class()
+        self.histpos = -1
+        self.root = self.root_class(self)
+        self.section = self.root
         self.send(self.prompt)
 
+    @property
+    def prompt(self):
+        if self.prompt_alternate:
+            return self.prompt_alternate
+        else:
+            path = '-'.join(self.section.path)
+            return self.prompt_default % dict(
+                name = self.name,
+                path = path,
+            )
+
     def send(self, data):
+        # make sure we send correct newlines (including carriage return)
+        data = '\r\n'.join(RE_NEWLINE.split(data))
         self.socket.send(data)
         self.socket.flush()
 
@@ -71,20 +94,35 @@ class CLI(object):
         self.last = self.char
         self.char = self.socket.recv(1)
 
-        # ^C / ^D / ^Z
-        if self.char in ['\x03', '\x04', '\x1a']:
+        # ^C / ^D
+        if self.char in ['\x03', '\x04']:
             if self.buffer:
+                if self.section != self.root:
+                    self.section = self.section.parent
                 self.buffer = ''
                 self.send('\x07')
                 self.sendline('')
-                self.histpos = len(self.history)
+                self.history.reset()
             else:
-                self.do_exit()
+                self.root.exit()
+
+        # ^Z
+        elif self.char == '\x1a':
+            if self.section != self.root:
+                self.section = self.section.parent
+                self.buffer = ''
+                self.sendline('')
+            else:
+                self.root.exit()
 
         # ^H / backspace
         elif self.char == '\x08':
             if self.mode == MODE_INPUT:
-                self.buffer_update(self.buffer[:-1])
+                buffer = ''.join([
+                    self.buffer[:max(0, self.linepos - 1)],
+                    self.buffer[self.linepos:]
+                ])
+                self.buffer_update(buffer, self.linepos - 1)
 
             elif self.mode == MODE_REVERSE_SEARCH:
                 filter = self.buffer[:-1]
@@ -96,15 +134,39 @@ class CLI(object):
 
         # ^I / tab
         elif self.char == '\x09':
-            tabs = [x.replace('do_', '') for x in dir(self) if x.startswith('do_%s' % (self.buffer,))]
+            tabs = self.section.complete(self.buffer)
             if len(tabs) == 0:
                 self.send('\x07') # beep
             elif len(tabs) == 1:
-                self.buffer = tabs[0] + ' '
-                self.send('\r%s%s' % (self.prompt, self.buffer))
+                self.buffer_update(tabs[0] + ' ')
             else:
                 tabs.sort()
                 self.sendline('\n\r%s' % (' '.join(tabs),))
+                self.buffer_update(self.buffer)
+
+        # ?
+        elif self.char == '?':
+            tabs = self.section.complete(self.buffer, include_root=False)
+            if len(tabs) == 0:
+                self.sendline('\x07')
+            elif len(tabs) == 1:
+                tabs = self.section.complete(tabs[0] + ' ', include_root=False)
+                tabs.sort()
+                self.send('\r\n')
+                pads = ' ' * len(self.prompt)
+                for item in tabs:
+                    self.send(''.join([pads, item, '\r\n']))
+                self.buffer_update(self.buffer)
+            else:
+                tabs.sort()
+                self.send('\r\n')
+                pads = ' ' * len(self.prompt)
+                size = max(map(len, tabs))
+                fmts = '%%s%%-%ds %%s\r\n' % (size,)
+                for item in tabs:
+                    #self.send(''.join([pads, item, '\r\n']))
+                    docs = self.root._get_syntax(item)
+                    self.send(fmts % (pads, item, docs))
                 self.buffer_update(self.buffer)
 
         # escape
@@ -120,24 +182,52 @@ class CLI(object):
         # ^R / reverse-search
         elif self.char == '\x12':
             self.mode = MODE_REVERSE_SEARCH
-            self.prompt = '(reverse-search): '
+            self.prompt_alternate = '(reverse-search): '
             self.buffer_update('')
 
         # ^S / forward-search
         elif self.char == '\x13':
             self.mode = MODE_FORWARD_SEARCH
-            self.prompt = '(forward-search): '
+            self.prompt_alternate = '(forward-search): '
             self.buffer_update('')
 
-        # ^W / wipe-word
+        # ^W / erase-word
         elif self.char == '\x17':
-            self.buffer_update(' '.join(self.buffer.split(' ')[:-1]))
+            if self.linepos == 0:
+                self.buffer_update(self.buffer)
+                return
+
+            marker = None
+            buffer = self.buffer[:self.linepos].rstrip(' \t')
+            for pos, char in list(enumerate(buffer))[::-1]:
+                if pos == 0:
+                    marker = 0
+                    break
+
+                elif char in ' \t':
+                    marker = pos + 1
+                    break
+
+            if marker is not None:
+                buffer = ''.join([
+                    self.buffer[:marker],
+                    self.buffer[self.linepos:]
+                ])
+                self.buffer_update(buffer, marker)
+            else:
+                self.buffer_update(self.buffer, self.linepos)
 
         # regular self.characters
         elif self.char >= '\x20' and self.char <= '\x7a':
             if self.mode == MODE_INPUT:
-                self.buffer += self.char
-                self.send(self.char)
+                #self.buffer += self.char
+                #self.send(self.char)
+                buffer = ''.join([
+                    self.buffer[:self.linepos],
+                    self.char,
+                    self.buffer[self.linepos:]
+                ])
+                self.buffer_update(buffer, self.linepos + 1)
 
             elif self.mode == MODE_REVERSE_SEARCH:
                 filter = self.buffer + self.char
@@ -147,9 +237,14 @@ class CLI(object):
                 filter = self.buffer + self.char
                 self.handle_search(self.char, filter, self.history)
 
+        # ^L / redraw
+        elif self.char == '\x0c':
+            self.sendline('')
+            self.buffer_update(self.buffer)
+
         # ^M / enter
         elif self.char in ['\x0a', '\x0d']:
-            self.prompt = self.prompt_default
+            self.prompt_alternate = None
             if self.mode == MODE_INPUT:
                 self.send('\r\n')
                 self.handle_command(self.buffer.strip())
@@ -160,12 +255,19 @@ class CLI(object):
 
         # fallback
         else:
-            self.sendline('')
+            self.sendline('chr(0x%02x)' % (ord(self.char),))
 
-    def buffer_update(self, new_buffer):
+    def buffer_update(self, new_buffer, linepos=None):
         self.send('\r%s%s' % (self.prompt, ' ' * len(self.buffer)))
         self.buffer = new_buffer
         self.send('\r%s%s' % (self.prompt, self.buffer))
+        if linepos is None:
+            self.linepos = len(self.buffer)
+        else:
+            # normalise
+            linepos = max(0, min(len(self.buffer), linepos))
+            self.send('\b' * (max(0, len(self.buffer) - linepos)))
+            self.linepos = linepos
 
     def handle_search(self, char, filter, history):
         self.search = ''
@@ -188,37 +290,29 @@ class CLI(object):
             self.sendline('')
             return
 
-        if ' ' in line:
-            cmnd, args = line.strip().split(' ', 1)
-        else:
-            cmnd = line.strip()
-            args = ''
-
-        if cmnd:
-            cmnd = self.alias.get(cmnd, cmnd)
-            hook = getattr(self, 'do_%s' % (cmnd,), None)
-            if hook:
-                try:
+        if line:
+            try:
+                if self.root.execute(line):
                     self.history.append(line)
-                    self.histpos = len(self.history)
-                    return hook(*args.split())
-                except Exception, e:
-                    error = str(e)
-                    test = self.re_arg.match(error)
-                    if test:
-                        func = test.groupdict()['func']
-                        args = int(test.groupdict()['args']) - 1
-                        error = '%s takes %d arguments' % (func, args)
-                        self.send('error: %s\n' % (error,))
-                        self.do_help(func, single=True)
-                        self.sendline('')
-                    else:
-                        self.sendline('error: %s' % (error,))
+                    self.history.reset()
                     return
+            except Exception, e:
+                error = str(e)
+                test = self.re_arg.match(error)
+                if test:
+                    func = test.groupdict()['func']
+                    args = int(test.groupdict()['args']) - 1
+                    error = '%s takes %d arguments' % (func, args)
+                    self.send('error: %s\n' % (error,))
+                    self.do_help(func, single=True)
+                    self.sendline('')
+                else:
+                    self.sendline('error: %s' % (error,))
+                return
 
-            elif cmnd.startswith('!'):
-                if cmnd.split()[0][1:].isdigit():
-                    back = int(cmnd.split()[0][1:])
+            if line.startswith('!'):
+                if line.split()[0][1:].isdigit():
+                    back = int(line.split()[0][1:])
                     if back >= len(self.history):
                         self.sendline('event not found')
                     else:
@@ -226,7 +320,7 @@ class CLI(object):
                     return
 
                 else:
-                    back = cmnd.split()[0][1:]
+                    back = line.split()[0][1:]
                     for item in self.history[::-1]:
                         if item.startswith(back):
                             return self.handle_command(item)
@@ -244,76 +338,51 @@ class CLI(object):
             # esc
             if key == 'esc':
                 self.mode = MODE_INPUT
-                self.prompt = self.prompt_default
+                self.prompt_alternate = None
                 self.buffer_update('')
-                self.histpos = len(self.history)
+                self.history.reset()
 
             # up
             elif key == 'up':
                 if self.history:
-                    self.histpos = max(self.histpos - 1, 0)
-                    self.buffer_update(self.history[self.histpos])
+                    self.buffer_update(self.history.backward())
+
+            # left
+            elif key == 'left':
+                self.buffer_update(self.buffer, self.linepos - 1)
+
+            # right
+            elif key == 'right':
+                self.buffer_update(self.buffer, self.linepos + 1)
 
             # down
             elif key == 'down':
                 if self.history:
-                    self.histpos = min(self.histpos + 1, len(self.history))
-                    if self.histpos == len(self.history):
+                    if (self.history.position + 1) == len(self.history):
                         self.buffer_update('')
                     else:
-                        self.buffer_update(self.history[self.histpos])
+                        self.buffer_update(self.history.forward())
 
-
-    def do_help(self, *args, **kwargs):
-        '''
-        syntax:  help [<command>]
-        example: help help
-
-        shows help for the given command
-        '''
-        if args:
-            hook = getattr(self, 'do_%s' % (args[0].lower(),), None)
-            if hook:
-                text = '\r\n'.join(textwrap.dedent(hook.__doc__).strip().splitlines())
-                if kwargs.get('signle', False):
-                    self.sendline(text.splitlines()[0])
-                else:
-                    self.sendline(text)
-            else:
-                self.sendline('command not found')
-
-        else:
-            return self.do_help('help')
-
-    def do_history(self):
-        '''
-        syntax:  history
-
-        shows the command history
-        '''
-        for i, command in enumerate(self.history):
-            if i > 0:
-                self.send('%d.\t%s\r\n' % (i, command))
-        self.send(self.prompt)
-
-    def do_exit(self, *args):
-        '''
-        syntax:  exit
-        example: exit
-
-        stop the scanner daemon
-        '''
-        self.send('bye\r\n')
-        sys.exit(0)
-
-    do_quit = do_exit
 
 if __name__ == '__main__':
     import select
+    from section import Section, command
+
+    class Test(Section):
+        name = 'test'
+
+        @command
+        def ping(self):
+            self.interface.sendline('pong!')
+
+        @command
+        def version(self):
+            self.interface.sendline('Python %s' % (sys.version,))
 
     con = Console()
     try:
-        cli = CLI(socket=con)
+        cli = Interface(socket=con)
+        tst = cli.root.addchild(Test(parent=cli.root))
         cli.is_running = True
         while cli.is_running:
             r, w, e = select.select([cli], [], [], 0.1)
