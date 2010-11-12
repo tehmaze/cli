@@ -98,7 +98,7 @@ class Section(object):
         else:
             return None, None, part
 
-    def execute(self, line):
+    def execute(self, sink, *pipe):
         '''
         Execute a command or change to the given section, firstly
         we try to interpret the line as a command; if that fails we
@@ -107,9 +107,10 @@ class Section(object):
 
         This function returns ``True`` if the line was executed.
         '''
+        line = pipe[0]
         node, func, args = self.lookup(line)
         if node and func:
-            node[func](*args)
+            node[func](sink, *args)
             return True
         else:
             part = line.split()
@@ -153,15 +154,15 @@ class Section(object):
                 # prepend the section name to the completed commands
                 return map(lambda item: ' '.join([name, item]),
                     self.getchild(name).complete(' '.join(part),
-                        include_root=include_root))
+                        include_root=False))
             else:
                 return []
 
-    def senddata(self, data):
-        return self.interface.send(data)
+    def senddata(self, sink, data):
+        return sink.write(data)
 
-    def sendline(self, line):
-        return self.interface.sendline(line)
+    def sendline(self, sink, line):
+        return self.senddata(sink, ''.join([line, '\r\n']))
 
 
 class Root(Section):
@@ -178,7 +179,7 @@ class Root(Section):
         return self
 
     @command
-    def help(self, *args, **kwargs):
+    def help(self, sink, *args, **kwargs):
         '''
         syntax:  help [<command>]
         example: help help
@@ -186,28 +187,15 @@ class Root(Section):
         shows help for the given command
         '''
         if args:
-            '''
-            args = list(args)
-            node = self
-            while True:
-                if node.haschild(args[0]):
-                    node = node.getchild(args.pop(0))
-                else:
-                    break
-
-            '''
-
             docs = self._get_doc(*args)
             if docs:
-                #hook = node[args[0]]
-                #text = '\r\n'.join(textwrap.dedent(hook.__doc__).strip().splitlines())
                 text = '\r\n'.join(textwrap.dedent(docs).strip().splitlines())
                 if kwargs.get('single', False):
-                    self.sendline(text.splitlines()[0])
+                    self.sendline(sink, text.splitlines()[0])
                 else:
-                    self.sendline(text)
+                    self.sendline(sink, text)
             else:
-                self.sendline('command not found')
+                self.sendline(sink, 'command not found')
 
         else:
             return self.help('help')
@@ -228,26 +216,27 @@ class Root(Section):
         return ''
 
     @command
-    def history(self, *args):
+    def history(self, sink, *args):
         '''
         syntax:  history
 
         shows the command history
         '''
+
         for i, command in enumerate(self.interface.history):
             if i > 0:
-                self.senddata('%d.\t%s\r\n' % (i, command))
-        self.senddata(self.interface.prompt)
+                self.senddata(sink, '%d.\t%s\r\n' % (i, command))
+        self.senddata(sink, self.interface.prompt)
 
     @command
-    def exit(self, *args):
+    def exit(self, sink, *args):
         '''
         syntax:  exit
         example: exit
 
         stop the scanner daemon
         '''
-        self.senddata('bye\r\n')
-        sys.exit(0)
+        self.senddata(sink, 'bye\r\n')
+        self.interface.is_running = False
 
     quit = exit

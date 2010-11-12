@@ -6,6 +6,8 @@ import textwrap
 from cli.console import Console
 from cli.section import Root
 from cli.history import History
+from cli.sink import Sink
+from cli.parser import parse, TokenPipe
 
 MODE_INPUT, MODE_REVERSE_SEARCH, MODE_FORWARD_SEARCH = range(3)
 RE_NEWLINE = re.compile(r'(?:\r\n|\n)')
@@ -65,6 +67,7 @@ class Interface(object):
         self.root = self.root_class(self)
         self.section = self.root
         self.send(self.prompt)
+        self.is_running = True
 
     @property
     def prompt(self):
@@ -104,7 +107,10 @@ class Interface(object):
                 self.sendline('')
                 self.history.reset()
             else:
-                self.root.exit()
+                sink = Sink()
+                self.root.exit(sink)
+                self.send(sink.output)
+                sys.exit(0)
 
         # ^Z
         elif self.char == '\x1a':
@@ -113,7 +119,10 @@ class Interface(object):
                 self.buffer = ''
                 self.sendline('')
             else:
-                self.root.exit()
+                sink = Sink()
+                self.root.exit(sink)
+                self.send(sink.output)
+                sys.exit(0)
 
         # ^H / backspace
         elif self.char == '\x08':
@@ -140,6 +149,11 @@ class Interface(object):
             elif len(tabs) == 1:
                 self.buffer_update(tabs[0] + ' ')
             else:
+                # remove everything upto the last completed item so that
+                # completing the items won't clutter your display
+                if ' ' in self.buffer:
+                    repl = ' '.join(self.buffer.split(' ')[:-1])
+                    tabs = [tab.replace(repl, '').lstrip() for tab in tabs]
                 tabs.sort()
                 self.sendline('\n\r%s' % (' '.join(tabs),))
                 self.buffer_update(self.buffer)
@@ -218,7 +232,7 @@ class Interface(object):
                 self.buffer_update(self.buffer, self.linepos)
 
         # regular self.characters
-        elif self.char >= '\x20' and self.char <= '\x7a':
+        elif self.char >= '\x20' and self.char < '\x7f':
             if self.mode == MODE_INPUT:
                 #self.buffer += self.char
                 #self.send(self.char)
@@ -291,11 +305,26 @@ class Interface(object):
             return
 
         if line:
+            sink = Sink()
+            pipe = []
+            part = []
+            for token in parse(line):
+                if isinstance(token, TokenPipe):
+                    pipe.append(' '.join(part))
+                    part = []
+                else:
+                    part.append(str(token))
+            if part:
+                pipe.append(' '.join(part))
+
+            print '\r\n', repr(pipe), '\r\n'
+
             try:
-                if self.root.execute(line):
-                    self.history.append(line)
-                    self.history.reset()
-                    return
+                self.root.execute(sink, *tuple(pipe))
+                self.history.append(line)
+                self.history.reset()
+                self.send(sink.output)
+                return
             except Exception, e:
                 error = str(e)
                 test = self.re_arg.match(error)
@@ -372,18 +401,17 @@ if __name__ == '__main__':
         name = 'test'
 
         @command
-        def ping(self):
+        def ping(self, sink):
             self.interface.sendline('pong!')
 
         @command
-        def version(self):
+        def version(self, sink):
             self.interface.sendline('Python %s' % (sys.version,))
 
     con = Console()
     try:
         cli = Interface(socket=con)
         tst = cli.root.addchild(Test(parent=cli.root))
-        cli.is_running = True
         while cli.is_running:
             r, w, e = select.select([cli], [], [], 0.1)
             if r:
