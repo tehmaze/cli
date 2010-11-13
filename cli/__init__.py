@@ -433,12 +433,25 @@ if __name__ == '__main__':
         name = 'test'
 
         @command
-        def ping(self, sink):
-            self.interface.sendline('pong!')
+        def ping(self, sink, *text):
+            '''
+            syntax:  ping [<text>]
+            example: ping
+            '''
+            if text:
+                self.sendline(sink, 'pong: %s' % (' '.join(text),))
+            else:
+                self.sendline(sink, 'pong!')
 
         @command
         def version(self, sink):
-            self.interface.sendline('Python %s' % (sys.version,))
+            '''
+            syntax:  version
+            example: version
+            '''
+            from cli.version import version
+            self.sendline(sink, version())
+            self.sendline(sink, 'Python %s' % (sys.version.splitlines()[0],))
 
     class Bogus(Section):
         name = 'bogus'
