@@ -54,5 +54,3 @@ TODO
 
 * History persistance
 
-* Sections (grouped commands)
-
