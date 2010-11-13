@@ -2,6 +2,11 @@ from functools import wraps
 import textwrap
 import sys
 import re
+import traceback
+try:
+    from cStringIO import StringIO
+except ImportError:
+    from StringIO import StringIO
 
 RE_SPACING = re.compile(r'\s+')
 
@@ -17,12 +22,11 @@ def command(func):
 class Section(object):
     name = None
 
-    def __init__(self, parent=None, aliases=None):
+    def __init__(self, parent=None, aliases=None, interface=None):
         self.parent = parent
         self.aliases = aliases or {}
         self.children = {}
-        if not hasattr(self, 'interface'):
-            self.interface = self.root.interface
+        self.interface = interface
 
     def __contains__(self, func):
         try:
@@ -56,6 +60,7 @@ class Section(object):
     def addchild(self, section):
         self.children[section.name] = section
         self.children[section.name].parent = self
+        self.children[section.name].interface = self.interface
 
     def delchild(self, section):
         if section.name in self.children:
@@ -75,18 +80,14 @@ class Section(object):
         '''
         Lookup a (child) node that will handle the line containing
         a command. This will descend down its children if a matching
-        pattern is found.
+        command is found.
         '''
-        if self.interface.section != self.interface.root:
-            part = self.interface.section.path + line.split()
-        else:
-            part = line.split()
-
+        part = line.split()
         node = self
-        while len(part) > 1:
-            name = part.pop(0)
-            if node.haschild(name):
-                node = node.getchild(name)
+        if len(part) > 1:
+            if self.haschild(part[0]):
+                name = part.pop(0)
+                return self.getchild(name).lookup(' '.join(part))
 
         # the node we found in the tree can handle the command
         if part[0] in node:
@@ -98,7 +99,7 @@ class Section(object):
         else:
             return None, None, part
 
-    def execute(self, sink, *pipe):
+    def execute(self, sink, line):
         '''
         Execute a command or change to the given section, firstly
         we try to interpret the line as a command; if that fails we
@@ -107,11 +108,18 @@ class Section(object):
 
         This function returns ``True`` if the line was executed.
         '''
-        line = pipe[0]
         node, func, args = self.lookup(line)
         if node and func:
-            node[func](sink, *args)
-            return True
+            try:
+                node[func](sink, *args)
+            except StopIteration:
+                return False
+            except Exception, error:
+                sink.stderr = 'exception: %s (see `traceback`)\r\n' % (str(error),)
+                self.interface.errors.append((error, traceback.format_exc()))
+                return False
+            else:
+                return True
         else:
             part = line.split()
             node = self
@@ -125,8 +133,11 @@ class Section(object):
 
             if len(part) == 0 and node != self:
                 self.interface.section = node
-                self.interface.sendline('')
+                #self.interface.sendline('')
                 return True
+
+        # still here?
+        self.interface.sendline('error: command not found')
 
     def complete(self, line, include_root=True):
         part = RE_SPACING.split(line)
@@ -167,8 +178,7 @@ class Section(object):
 
 class Root(Section):
     def __init__(self, interface):
-        self.interface = interface
-        Section.__init__(self, None)
+        Section.__init__(self, None, interface=interface)
 
     @property
     def path(self):
@@ -198,7 +208,10 @@ class Root(Section):
                 self.sendline(sink, 'command not found')
 
         else:
-            return self.help('help')
+            self.help(sink, 'help')
+            self.sendline(sink, '')
+            self.sendline(sink, 'limited tab completion is available')
+            self.sendline(sink, 'limited command expansion is available with "?"')
 
     def _get_doc(self, *args):
         node, func, args = self.lookup(' '.join(args))
@@ -226,7 +239,6 @@ class Root(Section):
         for i, command in enumerate(self.interface.history):
             if i > 0:
                 self.senddata(sink, '%d.\t%s\r\n' % (i, command))
-        self.senddata(sink, self.interface.prompt)
 
     @command
     def exit(self, sink, *args):
@@ -240,3 +252,18 @@ class Root(Section):
         self.interface.is_running = False
 
     quit = exit
+
+    @command
+    def traceback(self, sink, *args):
+        '''
+        syntax:  traceback
+        example: traceback
+
+        shows the traceback for the last exception, if available
+        '''
+        if self.interface.errors:
+            for line in self.interface.errors[-1][1].splitlines():
+                self.sendline(sink, line)
+        else:
+            self.sendline(sink, 'no traceback available')
+

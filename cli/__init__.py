@@ -6,8 +6,9 @@ import textwrap
 from cli.console import Console
 from cli.section import Root
 from cli.history import History
-from cli.sink import Sink
 from cli.parser import parse, TokenPipe
+from cli.sink import Sink
+from cli.filter import Filter
 
 MODE_INPUT, MODE_REVERSE_SEARCH, MODE_FORWARD_SEARCH = range(3)
 RE_NEWLINE = re.compile(r'(?:\r\n|\n)')
@@ -51,6 +52,7 @@ class Interface(object):
     }
 
     root_class = Root
+    filter_class = Filter
     history_class = History
 
     def __init__(self, socket=None, name='cli', prompt='%(name)s %(path)s%% '):
@@ -65,9 +67,11 @@ class Interface(object):
         self.history = self.history_class()
         self.histpos = -1
         self.root = self.root_class(self)
+        self.filter = self.filter_class(self)
         self.section = self.root
-        self.send(self.prompt)
+        self.errors = []
         self.is_running = True
+        self.send(self.prompt)
 
     @property
     def prompt(self):
@@ -306,6 +310,8 @@ class Interface(object):
 
         if line:
             sink = Sink()
+
+            # parse user input, split into pipe chunks
             pipe = []
             part = []
             for token in parse(line):
@@ -317,15 +323,24 @@ class Interface(object):
             if part:
                 pipe.append(' '.join(part))
 
-            print '\r\n', repr(pipe), '\r\n'
-
+            # evaluate pipe
             try:
-                self.root.execute(sink, *tuple(pipe))
+                for i, part in enumerate(pipe):
+                    # first pipe entry is a command
+                    if i == 0:
+                        if not self.section.execute(sink, part):
+                            break
+                    # all that follow are a filter
+                    else:
+                        if not self.filter.execute(sink, part):
+                            break
+                self.send(sink.output)
                 self.history.append(line)
                 self.history.reset()
-                self.send(sink.output)
+                self.buffer_update('')
                 return
             except Exception, e:
+                raise
                 error = str(e)
                 test = self.re_arg.match(error)
                 if test:
@@ -408,10 +423,18 @@ if __name__ == '__main__':
         def version(self, sink):
             self.interface.sendline('Python %s' % (sys.version,))
 
+    class Bogus(Section):
+        name = 'bogus'
+
+        @command
+        def error(self, sink):
+            raise Exception('bogus')
+
     con = Console()
     try:
         cli = Interface(socket=con)
-        tst = cli.root.addchild(Test(parent=cli.root))
+        cli.root.addchild(Test())
+        cli.root.addchild(Bogus())
         while cli.is_running:
             r, w, e = select.select([cli], [], [], 0.1)
             if r:
