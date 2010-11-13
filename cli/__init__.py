@@ -1,4 +1,20 @@
-#! /usr/bin/python -u
+#! /usr/bin/env python
+# 
+#                         _______
+#   ____________ _______ _\__   /_________       ___  _____
+#  |    _   _   \   _   |   ____\   _    /      |   |/  _  \
+#  |    /   /   /   /   |  |     |  /___/   _   |   |   /  /
+#  |___/___/   /___/____|________|___   |  |_|  |___|_____/
+#          \__/                     |___|
+#  
+#
+# (c) 2010 Wijnand 'maze' Modderman-Lenstra - http://maze.io/
+#
+
+__author__    = 'Wijnand Modderman-Lenstra <maze@pyth0n.org>'
+__copyright__ = '(C) 2010 Wijnand Modderman-Lenstra'
+__license__   = 'MIT'
+__url__       = 'http://code.maze.io/'
 
 import re
 import sys
@@ -12,6 +28,7 @@ from cli.filter import Filter
 
 MODE_INPUT, MODE_REVERSE_SEARCH, MODE_FORWARD_SEARCH = range(3)
 RE_NEWLINE = re.compile(r'(?:\r\n|\n)')
+
 
 class Interface(object):
     re_arg = re.compile(r'^do_(?P<func>\S+)\(\) takes exactly (?P<args>\d+) arguments')
@@ -441,5 +458,3 @@ if __name__ == '__main__':
                 cli.read()
     finally:
         con.restore()
-
-

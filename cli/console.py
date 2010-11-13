@@ -1,3 +1,21 @@
+#! /usr/bin/env python
+# 
+#                         _______
+#   ____________ _______ _\__   /_________       ___  _____
+#  |    _   _   \   _   |   ____\   _    /      |   |/  _  \
+#  |    /   /   /   /   |  |     |  /___/   _   |   |   /  /
+#  |___/___/   /___/____|________|___   |  |_|  |___|_____/
+#          \__/                     |___|
+#  
+#
+# (c) 2010 Wijnand 'maze' Modderman-Lenstra - http://maze.io/
+#
+
+__author__    = 'Wijnand Modderman-Lenstra <maze@pyth0n.org>'
+__copyright__ = '(C) 2010 Wijnand Modderman-Lenstra'
+__license__   = 'MIT'
+__url__       = 'http://code.maze.io/'
+
 import sys
 import termios
 import tty
