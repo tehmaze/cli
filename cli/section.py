@@ -216,14 +216,14 @@ class Root(Section):
         '''
         if args:
             docs = self._get_doc(*args)
-            if docs:
+            if docs is not None:
                 text = '\r\n'.join(textwrap.dedent(docs).strip().splitlines())
                 if kwargs.get('single', False):
                     self.sendline(sink, text.splitlines()[0])
                 else:
                     self.sendline(sink, text)
             else:
-                self.sendline(sink, 'command not found')
+                self.interface.sendline('error: command not found')
 
         else:
             self.help(sink, 'help')
@@ -234,9 +234,9 @@ class Root(Section):
     def _get_doc(self, *args):
         node, func, args = self.lookup(' '.join(args))
         if node and func:
-            return node[func].__doc__
+            return node[func].__doc__ or ''
         else:
-            return ''
+            return None
 
     def _get_syntax(self, *args):
         docs = self._get_doc(*args)
