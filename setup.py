@@ -1,8 +1,9 @@
 from setuptools import setup, find_packages
+from cli.version import version
 
 setup(
     name         = 'cli',
-    version      = '0.0.1',
+    version      = version(),
     author       = 'Wijnand Modderman-Lenstra',
     author_email = 'maze@pyth0n.org',
     description  = 'Command Line Interface',

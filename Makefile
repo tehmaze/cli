@@ -11,6 +11,9 @@ endif
 
 all:
 
+run:
+	$(Q)PYTHONPATH=$(shell pwd) $(PYTHON) $(shell pwd)/cli/__init__.py
+
 test: .FORCE $(TESTS)
 
 tests/%.py: .FORCE
