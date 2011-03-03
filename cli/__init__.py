@@ -101,6 +101,15 @@ class Interface(object):
                 path = path,
             )
 
+    def loop(self):
+        '''
+        Start running the command line interface.
+        '''
+        while cli.is_running:
+            r, w, e = select.select([cli], [], [], 0.1)
+            if r:
+                cli.read()
+
     def send(self, data):
         # make sure we send correct newlines (including carriage return)
         data = '\r\n'.join(RE_NEWLINE.split(data))
