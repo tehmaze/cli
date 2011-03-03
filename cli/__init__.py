@@ -105,10 +105,10 @@ class Interface(object):
         '''
         Start running the command line interface.
         '''
-        while cli.is_running:
-            r, w, e = select.select([cli], [], [], 0.1)
+        while self.is_running:
+            r, w, e = select.select([self], [], [], 0.1)
             if r:
-                cli.read()
+                self.read()
 
     def send(self, data):
         # make sure we send correct newlines (including carriage return)
