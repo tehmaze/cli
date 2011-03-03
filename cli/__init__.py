@@ -105,6 +105,7 @@ class Interface(object):
         '''
         Start running the command line interface.
         '''
+        import select
         while self.is_running:
             r, w, e = select.select([self], [], [], 0.1)
             if r:
