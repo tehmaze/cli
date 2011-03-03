@@ -146,7 +146,7 @@ class Interface(object):
                 sys.exit(0)
 
         # ^H / backspace
-        elif self.char == '\x08':
+        elif self.char in ['\x08', '\x7f']:
             if self.mode == MODE_INPUT:
                 buffer = ''.join([
                     self.buffer[:max(0, self.linepos - 1)],
