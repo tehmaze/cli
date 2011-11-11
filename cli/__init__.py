@@ -434,6 +434,8 @@ class Interface(object):
                     else:
                         self.buffer_update(self.history.forward())
 
+# Provide backward compatibility
+CLI = Interface
 
 if __name__ == '__main__':
     import select
