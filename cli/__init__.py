@@ -115,7 +115,9 @@ class Interface(object):
         # make sure we send correct newlines (including carriage return)
         data = '\r\n'.join(RE_NEWLINE.split(data))
         self.socket.send(data)
-        self.socket.flush()
+        # TCP sockets don't have a flush method
+        if hasattr(self.socket, "flush"):
+            self.socket.flush()
 
     def sendline(self, data=''):
         self.send(data + '\r\n')
