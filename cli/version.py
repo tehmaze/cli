@@ -15,7 +15,7 @@ __author__    = 'Wijnand Modderman-Lenstra <maze@pyth0n.org>'
 __copyright__ = '(C) 2010 Wijnand Modderman-Lenstra'
 __license__   = 'MIT'
 __url__       = 'http://code.maze.io/'
-__version__   = '0.0.1'
+__version__   = '0.1.0'
 
 import os
 PACKAGE = os.path.basename(os.path.dirname(os.path.abspath(__file__)))
