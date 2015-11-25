@@ -1,297 +1,374 @@
-#! /usr/bin/env python
-# 
-#                         _______
-#   ____________ _______ _\__   /_________       ___  _____
-#  |    _   _   \   _   |   ____\   _    /      |   |/  _  \
-#  |    /   /   /   /   |  |     |  /___/   _   |   |   /  /
-#  |___/___/   /___/____|________|___   |  |_|  |___|_____/
-#          \__/                     |___|
-#  
-#
-# (c) 2010 Wijnand 'maze' Modderman-Lenstra - http://maze.io/
-#
+"""Command line sections."""
 
-__author__    = 'Wijnand Modderman-Lenstra <maze@pyth0n.org>'
-__copyright__ = '(C) 2010 Wijnand Modderman-Lenstra'
-__license__   = 'MIT'
-__url__       = 'http://code.maze.io/'
-
+import inspect
 from functools import wraps
-import textwrap
-import sys
 import re
-import traceback
-try:
-    from cStringIO import StringIO
-except ImportError:
-    from StringIO import StringIO
+import textwrap
 
-RE_SPACING = re.compile(r'\s+')
+from blessed import Terminal
+from prompt_toolkit import prompt
+from prompt_toolkit.history import InMemoryHistory
+from pygments.token import Token
 
-def command(func):
-    @wraps(func)
-    def decorated(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    decorated.is_method = True
-    return decorated
+from .lock import ThreadLock
+from .completer import Completer
+from .lexer import lexer_factory
+from .style import style_factory
+from .toolbar import Toolbar
 
 
-class Section(object):
+#: Regular expression to match one or more spaces
+RE_SPACES = re.compile(r'\s+')
+
+
+def get_syntax(func, name=None, argspec=None):
+    """Get the function call syntax."""
+    spec = [name or func.__name__]
+
+    argspec = argspec or inspect.getargspec(func)
+    if argspec.args:
+        if argspec.args[0] == 'self':
+            argspec.args.pop(0)
+
+        if argspec.defaults is None:
+            defaults = 0
+        else:
+            defaults = len(argspec.defaults)
+        required = len(argspec.args)
+
+        for i in range(required - defaults):
+            spec.append('<{}>'.format(argspec.args[i]))
+        for i in range(required - defaults, required):
+            spec.append('[<{}>]'.format(argspec.args[i]))
+
+    return ' '.join(spec)
+
+
+def command(name=None, aliases=[]):
+    """Command function decorator."""
+    def _decorate(func):
+        argspec = inspect.getargspec(func)
+
+        @wraps(func)
+        def _decorator(*args, **kwargs):
+            return func(*args, **kwargs)
+
+        # Add helper attributes for the section parser
+        _decorator.argspec = argspec
+        _decorator.command = name or func.__name__
+        _decorator.aliases = aliases
+        _decorator.syntax = get_syntax(func, _decorator.command, argspec)
+
+        return _decorator
+    return _decorate
+
+
+class Section:
+    """Class representing a section (with commands)."""
+
+    #: Name of (sub) section
     name = None
 
-    def __init__(self, parent=None, aliases=None, interface=None):
-        self.parent = parent
-        self.aliases = aliases or {}
-        self.children = {}
-        self.interface = interface
+    #: Banner to display when the section is entered
+    banner = None
 
-    def __contains__(self, func):
-        try:
-            return self[func].is_method
-        except AttributeError:
-            return False
+    completer_class = Completer
+    history_class = InMemoryHistory
+    keys_factory = None
+    lexer_factory = lexer_factory
+    style_factory = style_factory
+    toolbar_class = Toolbar
 
-    def __getitem__(self, func):
-        return getattr(self, func)
+    def __init__(self, parent=None):
+        """Setup a new section. If this is a child section, pass a `parent`."""
+        self._parent = parent
+        self._parent_lock = ThreadLock()
 
-    @property
-    def commands(self):
+        self._sections = {}
+        self._commands = {}
+        self._running = False
+
         for attr in dir(self):
-            try:
-                if getattr(self, attr).is_method:
-                    yield attr
-            except AttributeError:
-                pass
+            method = getattr(self, attr)
+            if not callable(method):
+                continue
 
-    @property
-    def path(self):
-        return self.parent.path + [self.name]
+            command = getattr(method, 'command', False)
+            if command:
+                aliases = getattr(method, 'aliases', [])
+                for item in set([command] + aliases):
+                    self.add_command(item, method)
 
-    @property
-    def root(self):
-        node = self
-        while node.parent:
-            node = node.parent
-        return node
-
-    def addchild(self, section):
-        self.children[section.name] = section
-        self.children[section.name].parent = self
-        self.children[section.name].interface = self.interface
-
-    def delchild(self, section):
-        if section.name in self.children:
-            self.children[section.name].parent = None
-            del self.children[section.name]
-
-    def getchild(self, name):
-        return self.children[name]
-
-    def haschild(self, section):
-        if isinstance(section, Section):
-            return section.name in self.children
+        self._term = Terminal()
+        self._completer = self.completer_class(self)
+        self._history = self.history_class()
+        self._lexer = self.lexer_factory()
+        self._style = self.style_factory()
+        self._toolbar = self.toolbar_class(self)
+        if self.keys_factory:
+            self._keys_registry = self.keys_factory().registry
         else:
-            return section in self.children
+            self._keys_registry = None
 
-    def lookup(self, line):
-        '''
-        Lookup a (child) node that will handle the line containing
-        a command. This will descend down its children if a matching
-        command is found.
-        '''
-        part = line.split()
-        node = self
-        if len(part) > 1:
-            if self.haschild(part[0]):
-                name = part.pop(0)
-                return self.getchild(name).lookup(' '.join(part))
-
-        # the node we found in the tree can handle the command
-        if part[0] in node:
-            return node, part.pop(0), part
-        # the rood node can handle the command
-        elif part[0] in self.root:
-            return self.root, part[0], part
-        # no node can handle the command
-        else:
-            return None, None, part
-
-    def execute(self, sink, line):
-        '''
-        Execute a command or change to the given section, firstly
-        we try to interpret the line as a command; if that fails we
-        will descend down the children to see if the given line is
-        a section.
-
-        This function returns ``True`` if the line was executed.
-        '''
-        node, func, args = self.lookup(line)
-        if node and func:
-            try:
-                node[func](sink, *args)
-            except StopIteration:
-                return False
-            except Exception, error:
-                sink.stderr = 'exception: %s (see `traceback`)\r\n' % (str(error),)
-                self.interface.errors.append((error, traceback.format_exc()))
-                return False
-            else:
-                return True
-        else:
-            part = line.split()
-            node = self
-            while part:
-                name = part.pop(0)
-                if node.haschild(name):
-                    node = node.getchild(name)
-                else:
-                    # no matching child section, bail out
-                    break
-
-            if len(part) == 0 and node != self:
-                self.interface.section = node
-                #self.interface.sendline('')
-                return True
-
-        # still here?
-        self.interface.sendline('error: command not found')
-
-    def complete(self, line, include_root=True):
-        part = RE_SPACING.split(line)
-        if len(part):
-            name = part.pop(0)
-        else:
-            name = ''
-
-        # if there is no remaining elements after the first word, assume
-        # the item we are locating is either a command or a section in
-        # this node
-        if len(part) == 0:
-            cmnds = [c for c in self.commands if c.startswith(name)]
-            sects = [s for s in self.children if s.startswith(name)]
-            # include root commands, but only if the current node is not the
-            # root node
-            if include_root and self != self.root:
-                cmnds.extend([c for c in self.root.commands if c.startswith(name)])
-            # de-duplication
-            return list(set(cmnds + sects))
-        # otherwise, try to complete the line in the node with a matching
-        # name; is all fails, we are not able to complete the request
-        else:
-            if self.haschild(name):
-                # prepend the section name to the completed commands
-                return map(lambda item: ' '.join([name, item]),
-                    self.getchild(name).complete(' '.join(part),
-                        include_root=False))
-            else:
-                return []
-
-    def senddata(self, sink, data):
-        return sink.write(data)
-
-    def sendline(self, sink, line):
-        return self.senddata(sink, ''.join([line, '\r\n']))
-
-
-class Root(Section):
-    def __init__(self, interface):
-        Section.__init__(self, None, interface=interface)
-
-    @property
-    def path(self):
-        return []
-
-    @property
-    def root(self):
+    def __add__(self, *other):
+        """Add one or more child sections."""
+        for section in other:
+            self.add_section(section)
         return self
 
-    @command
-    def help(self, sink, *args, **kwargs):
-        '''
-        syntax:  help [<command>]
-        example: help help
+    def __call__(self, command):
+        """Dispatch a command or section jump."""
+        part = RE_SPACES.split(command.strip())
+        if not part:
+            return
 
-        shows help for the given command
-        '''
-        if args:
-            docs = self._get_doc(*args)
-            if docs is not None:
-                text = '\r\n'.join(textwrap.dedent(docs).strip().splitlines())
-                if kwargs.get('single', False):
-                    self.sendline(sink, text.splitlines()[0])
-                else:
-                    self.sendline(sink, text)
+        if part[0] == '\x1a':  # SUB or ^Z
+            self._running = False
+            return
+
+        try:
+            item = self[part[0]]
+        except KeyError:
+            self.command_not_found(part[0], *part[1:])
+            return
+
+        if isinstance(item, Section):
+            if len(part) > 1:
+                # We have more arguments, pass it as command to the section
+                # without entering the run loop.
+                item(' '.join(part[1:]))
             else:
-                self.interface.sendline('error: command not found')
+                # No arguments, continue in the nested section.
+                item.run()
 
         else:
-            self.help(sink, 'help')
-            self.sendline(sink, '')
-            self.sendline(sink, 'limited tab completion is available')
-            self.sendline(sink, 'limited command expansion is available with "?"')
+            min_args = len(item.argspec.args)
+            max_args = min_args
+            if item.argspec.defaults:
+                min_args -= len(item.argspec.defaults)
 
-    def _get_doc(self, *args):
-        node, func, args = self.lookup(' '.join(args))
-        if node and func:
-            return node[func].__doc__ or ''
+            args = part[1:]
+            if len(args) < min_args:
+                self._error('missing required arguments {}'.format(
+                    ', '.join(item.argspec.args[len(args):])))
+
+            elif len(args) > max_args and not item.argspec.varargs:
+                self._error('too many arguments')
+
+            else:
+                # Dispatch command
+                item(*args)
+
+    def __contains__(self, key):
+        """Check if the given key is a valid child section or command."""
+        return key in self._sections or key in self._commands
+
+    def __enter__(self):
+        """Allow the section to be called as a context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """Exit the context manager."""
+        return
+
+    def __getitem__(self, key):
+        """Get a section or command."""
+        try:
+            return self._sections[key]
+        except KeyError:
+            pass
+        try:
+            return self._commands[key]
+        except KeyError:
+            pass
+        raise KeyError('No such section or command "{}"'.format(key))
+
+    def __iter__(self):
+        """Iterate over all sections and commands."""
+        for name, section in sorted(self._sections.items()):
+            yield name, section
+        for name, command in sorted(self._commands.items()):
+            if name in self._sections:
+                continue  # masked by section with the same name
+            yield name, command
+
+    def add_command(self, name, fn):
+        """Add a named command callback function."""
+        assert name not in self._commands, 'Duplicate "{}"'.format(command)
+        assert callable(fn)
+        self._commands[name] = fn
+
+    def add_section(self, section, name=None):
+        """Add a named child section."""
+        name = name or section.name
+        assert name, 'Subsections must have a name'
+        self._sections[name] = section
+        self._sections[name].set_parent(self)
+
+        # Update lexer
+        self._lexer = self.lexer_factory()
+
+    def get_root(self):
+        """Get the root section."""
+        with self._parent_lock:
+            if self._parent is None:
+                return self
+            return self._parent
+
+    def get_parent(self):
+        """Get the parent section."""
+        with self._parent_lock:
+            return self._parent
+
+    def set_parent(self, parent):
+        """Set the parent section and update the lexer."""
+        with self._parent_lock:
+            self._parent = parent
+
+        # Update lexer
+        self._lexer = self.lexer_factory()
+
+    def complete_command(self, query):
+        """Complete a command or section based on `query`.
+
+        The `query` will contain the text before the cursor.
+        """
+        def _doc(what, default=None):
+            try:
+                return what.__doc__.splitlines()[0].strip()
+            except AttributeError:
+                return default
+
+        for name, section in self._sections.items():
+            if name.startswith(query):
+                yield name, _doc(section, 'Sub section')
+        for name, command in self._commands.items():
+            if name.startswith(query):
+                yield name, _doc(command)
+
+    def complete_command_args(self, command, *args):
+        """Complete the command arguments.
+
+        If there is a `_complete_$command` method on the class, the method is
+        called to yield completion suggestions for the supplied arguments.
+        """
+        method = '_complete_{}_args'.format(command.command)
+        completion_hook = getattr(self, method, None)
+        if completion_hook is not None:
+            yield from completion_hook(*args)
+
+    def _error(self, message):
+        """Display an error to the user."""
+        print(self._term.bright_red('Error: ' + message))
+
+    @property
+    def _path(self):
+        """List with all section names up to the root."""
+        path = []
+        with self._parent_lock:
+            if self._parent:
+                path.extend(self._parent._path)
+        if self.name is not None:
+            path.append(self.name)
+        return path
+
+    @property
+    def _prompt(self):
+        """Prompt string."""
+        return '{}% '.format(' '.join(self._path))
+
+    def _prompt_tokens(self, cli):
+        """Prompt tokens."""
+        return [
+            (Token.Prompt, ' '.join(self._path)),
+            (Token.Prompt.Arg, '% '),
+        ]
+
+    def run(self):
+        """Parse user input until termination is requested."""
+        if self.banner:
+            print(self.banner)
+
+        self._running = True
+        while self._running:
+            try:
+                result = prompt(
+                    completer=self._completer,
+                    get_bottom_toolbar_tokens=self._toolbar.get_tokens,
+                    get_prompt_tokens=self._prompt_tokens,
+                    history=self._history,
+                    lexer=self._lexer,
+                    key_bindings_registry=self._keys_registry,
+                    mouse_support=True,
+                    patch_stdout=True,
+                    style=self._style,
+                )
+            except EOFError:
+                self._running = False
+            else:
+                if result:
+                    self(result)
+
+    def command_not_found(self, item, *args):
+        """Handle a command not found that has been previously dispatched."""
+        self._error('unknown command or section "{}"'.format(item))
+
+    @command()
+    def help(self, command=None):
+        """Show the available commands, or help for the specified command.
+
+        This command is available in all sections. If the command is omitted, a
+        list of available commands and sections is printed to the screen.
+        """
+        if command is None:
+            if self._commands:
+                print(self._term.bold_white('available commands:'))
+                for item in sorted(self._commands):
+                    print('    ' + self._commands[item].syntax)
+                print('')
+            if self._sections:
+                print(self._term.bold_white('available sections:'))
+                for item in sorted(self._sections):
+                    print('    ' + item)
+                print('')
+
+        elif command in self._sections:
+            print('Function:\n\n    Go to the "{}" section\n'.format(command))
+            print('Syntaxis:\n\n    {}\n'.format(command))
+
+        elif command in self._commands:
+            docs = self._commands[command].__doc__
+
+            if docs:
+                docs = [line for line in docs.splitlines() if docs or line]
+                print('Function:\n\n    {}\n'.format(
+                    docs[0].strip(' .\t\n\r')))
+                print('Syntaxis:\n\n    {}\n'.format(
+                    self._commands[command].syntax))
+
+                if len(docs) > 1:
+                    print('description:\n')
+                    docs = textwrap.dedent('\n'.join([
+                        line for line in docs[1:] if docs or line]))
+                    for line in textwrap.wrap(docs, initial_indent=''):
+                        print('    {}'.format(line))
+
+            else:
+                self._error('{}: undocumented command'.format(command))
+
         else:
-            return None
+            self._error('unknown command or section "{}"'.format(command))
 
-    def _get_syntax(self, *args):
-        docs = self._get_doc(*args)
-        if docs:
-            for line in docs.strip().splitlines():
-                if line.startswith('syntax:'):
-                    return ' '.join(line.split()[2:])
-        return ''
+    def _complete_help_args(self, *args):
+        """Complete the help function arguments."""
+        # The help funciton takes one argument
+        if len(args) != 1:
+            return
 
-    @command
-    def history(self, sink, *args):
-        '''
-        syntax:  history
+        for suggestion, meta in self.complete_command(args[0]):
+            yield 'help ' + suggestion, meta
 
-        shows the command history
-        '''
-
-        for i, command in enumerate(self.interface.history):
-            if i > 0:
-                self.senddata(sink, '%d.\t%s\r\n' % (i, command))
-
-    @command
-    def exit(self, sink, *args):
-        '''
-        syntax:  exit
-        example: exit
-
-        stop the scanner daemon
-        '''
-        self.senddata(sink, 'bye\r\n')
-        self.interface.is_running = False
-
-    quit = exit
-
-    @command
-    def traceback(self, sink, *args):
-        '''
-        syntax:  traceback
-        example: traceback
-
-        shows the traceback for the last exception, if available
-        '''
-        if self.interface.errors:
-            for line in self.interface.errors[-1][1].splitlines():
-                self.sendline(sink, line)
-        else:
-            self.sendline(sink, 'no traceback available')
-
-    @command
-    def version(self, sink):
-        '''
-        syntax:  version
-        example: version
-
-        show CLI version information
-        '''
-        from cli.version import version
-        self.sendline(sink, version())
+    @command(aliases=['quit'])
+    def exit(self):
+        """Terminate the command line session."""
+        self._running = False

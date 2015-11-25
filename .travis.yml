@@ -1,0 +1,16 @@
+language: python
+
+env:
+  - TOXENV=py27
+  - TOXENV=py33
+  - TOXENV=py34
+
+install:
+  - pip install -q tox -rrequirements.txt
+
+script:
+  - tox -e $TOXENV
+
+notifications:
+  email:
+    - maze@pyth0n.org

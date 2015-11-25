@@ -1,0 +1,4 @@
+pep8
+pep257
+pyflakes
+tox

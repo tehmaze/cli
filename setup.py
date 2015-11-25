@@ -1,15 +1,13 @@
-from setuptools import setup, find_packages
-from cli.version import version
+from setuptools import setup
 
 setup(
-    name         = 'cli',
-    version      = version(),
-    author       = 'Wijnand Modderman-Lenstra',
-    author_email = 'maze@pyth0n.org',
-    description  = 'Command Line Interface',
-    long_description = file('README.rst').read(),
-    license      = 'MIT',
-    keywords     = 'cli command line',
-    packages     = ['cli'],
+    name='cli',
+    version='1.0',
+    author='Wijnand Modderman-Lenstra',
+    author_email='maze@pyth0n.org',
+    description=('Command Line Interface framework'),
+    url='https://github.com/tehmaze/cli',
+    license='MIT',
+    keywords='command line interface cli tab completion prompt',
+    packages=['cli'],
 )
-
