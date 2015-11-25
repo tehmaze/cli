@@ -55,6 +55,11 @@ class Completer(completion.Completer):
         else:
             completions = section.complete_command_args(command, *arguments)
 
+        seen = set([])
         for suggestion, meta in sorted(list(completions)):
+            if suggestion in seen:
+                continue
+
             command = ' '.join(path + [suggestion])
             yield Completion(command, -len(text), display_meta=meta)
+            seen.add(suggestion)
