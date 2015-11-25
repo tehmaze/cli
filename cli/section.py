@@ -21,10 +21,9 @@ from .toolbar import Toolbar
 RE_SPACES = re.compile(r'\s+')
 
 
-def get_syntax(func, name=None, argspec=None):
+def get_syntax(func, argspec=None):
     """Get the function call syntax."""
-    spec = [name or func.__name__]
-
+    spec = []
     argspec = argspec or inspect.getargspec(func)
     if argspec.args:
         if argspec.args[0] == 'self':
@@ -57,7 +56,7 @@ def command(name=None, aliases=[]):
         _decorator.argspec = argspec
         _decorator.command = name or func.__name__
         _decorator.aliases = aliases
-        _decorator.syntax = get_syntax(func, _decorator.command, argspec)
+        _decorator.syntax = get_syntax(func, argspec)
 
         return _decorator
     return _decorate
@@ -324,7 +323,8 @@ class Section:
             if self._commands:
                 print(self._term.bold_white('available commands:'))
                 for item in sorted(self._commands):
-                    print('    ' + self._commands[item].syntax)
+                    print('    {} {}'.format(
+                        item, self._commands[item].syntax))
                 print('')
             if self._sections:
                 print(self._term.bold_white('available sections:'))
@@ -343,8 +343,8 @@ class Section:
                 docs = [line for line in docs.splitlines() if docs or line]
                 print('Function:\n\n    {}\n'.format(
                     docs[0].strip(' .\t\n\r')))
-                print('Syntaxis:\n\n    {}\n'.format(
-                    self._commands[command].syntax))
+                print('Syntaxis:\n\n    {} {}\n'.format(
+                    command, self._commands[command].syntax))
 
                 if len(docs) > 1:
                     print('description:\n')
